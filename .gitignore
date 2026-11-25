@@ -1,3 +1,8 @@
 .DS_Store
 Thumbs.db
 *.zip
+
+# Credenciais e dados do servidor (NUNCA versionar)
+api/kommo-config.php
+api/_dados/*
+!api/_dados/.htaccess

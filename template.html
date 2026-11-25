@@ -1063,23 +1063,56 @@ fbq('init','432105726399169');fbq('track','PageView');</script>
 <script>
   document.getElementById('year').textContent = new Date().getFullYear();
 
-  // ---- Captura de UTM (convergência com tráfego pago) ----
-  (function(){
+  // ---- Captura de UTM e identificadores de campanha (convergência com tráfego pago) ----
+  var TRACK_KEYS = ['utm_source','utm_medium','utm_campaign','utm_content','utm_term','gclid','fbclid'];
+  var tracking = (function(){
     var params = new URLSearchParams(window.location.search);
-    ['utm_source','utm_medium','utm_campaign','utm_content','utm_term'].forEach(function(key){
-      var el = document.getElementById(key);
-      if(el) el.value = params.get(key) || '';
-    });
+    var saved = {};
+    try { saved = JSON.parse(sessionStorage.getItem('lp_tracking') || '{}') || {}; } catch (err) { saved = {}; }
+    var out = {};
+    TRACK_KEYS.forEach(function(key){ out[key] = params.get(key) || saved[key] || ''; });
+    try { sessionStorage.setItem('lp_tracking', JSON.stringify(out)); } catch (err) {}
+    return out;
   })();
+  function fillTracking(){
+    TRACK_KEYS.forEach(function(key){
+      var el = document.getElementById(key);
+      if (el) el.value = tracking[key] || '';
+    });
+  }
+  fillTracking();
 
-  // ---- Envio do formulário (fallback via mailto) ----
-  // Substitua este bloco por uma integração real (Formspree, RD Station, HubSpot, etc.)
-  // quando tiverem uma escolhida. Deixei funcional como ponto de partida.
+  // ---- Envio do formulário → endpoint seguro (Kommo). Se falhar, cai no e-mail (mailto) ----
+  var LEAD_ENDPOINT = 'https://sacihweb.com/lp-sacih-api/kommo-lead.php';
+
+  function sendByMailto(data){
+    var body = [
+      'Nome: ' + data.get('nome'),
+      'Hospital: ' + data.get('hospital'),
+      'E-mail: ' + data.get('email'),
+      'Telefone: ' + data.get('telefone'),
+      'Cargo/área: ' + (data.get('cargo') || '-'),
+      '',
+      'UTM source: ' + (data.get('utm_source') || '-'),
+      'UTM medium: ' + (data.get('utm_medium') || '-'),
+      'UTM campaign: ' + (data.get('utm_campaign') || '-'),
+      'UTM content: ' + (data.get('utm_content') || '-'),
+      'UTM term: ' + (data.get('utm_term') || '-')
+    ].join('\n');
+
+    var mailto = 'mailto:relacionamento@biobytebrasil.com'
+      + '?subject=' + encodeURIComponent('Novo lead SACIH — ' + data.get('hospital'))
+      + '&body=' + encodeURIComponent(body);
+
+    window.location.href = mailto;
+  }
+
   document.getElementById('lead-form').addEventListener('submit', function(e){
     e.preventDefault();
     var form = e.target;
     var msgOk = document.getElementById('msg-ok');
     var msgErr = document.getElementById('msg-err');
+    var btn = form.querySelector('button[type="submit"]');
     msgOk.style.display = 'none';
     msgErr.style.display = 'none';
 
@@ -1090,26 +1123,67 @@ fbq('init','432105726399169');fbq('track','PageView');</script>
       return;
     }
 
+    if (btn.disabled) { return; } // evita envio duplicado
+    var btnText = btn.textContent;
+    btn.disabled = true;
+    btn.textContent = 'Enviando...';
+
     var data = new FormData(form);
-    var body = [
-      'Nome: ' + data.get('nome'),
-      'Hospital: ' + data.get('hospital'),
-      'E-mail: ' + data.get('email'),
-      'Telefone: ' + data.get('telefone'),
-      'Cargo/área: ' + (data.get('cargo') || '-'),
-      '',
-      'UTM source: ' + (data.get('utm_source') || '-'),
-      'UTM medium: ' + (data.get('utm_medium') || '-'),
-      'UTM campaign: ' + (data.get('utm_campaign') || '-')
-    ].join('\n');
+    if (!data.get('gclid')) data.set('gclid', tracking.gclid || '');
+    if (!data.get('fbclid')) data.set('fbclid', tracking.fbclid || '');
+    data.set('pagina', window.location.href);
+    data.set('referrer', document.referrer || '');
 
-    var mailto = 'mailto:relacionamento@biobytebrasil.com'
-      + '?subject=' + encodeURIComponent('Novo lead SACIH — ' + data.get('hospital'))
-      + '&body=' + encodeURIComponent(body);
+    // Envia tudo codificado num único campo (evita bloqueio do firewall do servidor por URLs/apóstrofos)
+    var payload = {};
+    data.forEach(function(value, key){ if (typeof value === 'string') payload[key] = value; });
+    var body = new FormData();
+    body.append('d', btoa(unescape(encodeURIComponent(JSON.stringify(payload)))));
 
-    window.location.href = mailto;
-    msgOk.style.display = 'block';
-    form.reset();
+    function finish(){
+      btn.disabled = false;
+      btn.textContent = btnText;
+    }
+    function onSuccess(){
+      msgOk.textContent = 'Recebemos seus dados! Nosso time entra em contato em até 1 dia útil.';
+      msgOk.style.display = 'block';
+      form.reset();
+      fillTracking();
+      window.dataLayer = window.dataLayer || [];
+      window.dataLayer.push({ event: 'lead_form_sucesso', form_id: 'lead-form' });
+    }
+    function onFallback(){
+      sendByMailto(data);
+      msgOk.textContent = 'Recebemos seus dados! Vamos abrir seu e-mail para confirmar o envio.';
+      msgOk.style.display = 'block';
+      form.reset();
+      fillTracking();
+    }
+
+    var controller = ('AbortController' in window) ? new AbortController() : null;
+    var timer = controller ? setTimeout(function(){ controller.abort(); }, 20000) : null;
+
+    fetch(LEAD_ENDPOINT, {
+      method: 'POST',
+      body: body,
+      headers: { 'Accept': 'application/json' },
+      signal: controller ? controller.signal : undefined
+    })
+      .then(function(res){
+        return res.json().catch(function(){ return {}; }).then(function(json){
+          return { status: res.status, json: json || {} };
+        });
+      })
+      .then(function(r){
+        if (r.json.ok === true) { onSuccess(); }
+        else if (r.status === 422) { msgErr.style.display = 'block'; }
+        else { onFallback(); }
+      })
+      .catch(function(){ onFallback(); })
+      .then(function(){
+        if (timer) clearTimeout(timer);
+        finish();
+      });
   });
 </script>
 
