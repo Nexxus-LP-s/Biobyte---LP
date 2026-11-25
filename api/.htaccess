@@ -1,0 +1,11 @@
+# Protege o arquivo de credenciais e arquivos ocultos da pasta /api.
+<FilesMatch "^(kommo-config\.php|kommo-config\.example\.php|\..*)$">
+  <IfModule mod_authz_core.c>
+    Require all denied
+  </IfModule>
+  <IfModule !mod_authz_core.c>
+    Order allow,deny
+    Deny from all
+  </IfModule>
+</FilesMatch>
+Options -Indexes
